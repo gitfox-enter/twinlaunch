@@ -79,6 +79,18 @@
 
 **已知反例**：Electron 应用可以在启动早期调用 `app.setPath('userData', <硬编码路径>)` 再 `requestSingleInstanceLock()`，此时 `--user-data-dir` **永远到不了单实例检查**，第二个实例仍然秒退。静态探测无法识别这种情况——**这是通道 B 必须做动态实测的根本原因**。
 
+**⚠️ 2026-10-14 本机实测新反例：厂商启动壳直接拦截参数。** 目标：WorkBuddy 5.7.7（Electron 37.10.3-24，装于 per-user 目录，`resources\app.asar` 213MB、`resources.pak`/`libEGL.dll`/`v8_context_snapshot.bin` 齐全，内核探测为 high）。实际执行：
+
+```
+WorkBuddy.exe --user-data-dir=D:\profile2
+→ WorkBuddy.exe: bad option: --user-data-dir=D:\profile2
+→ 进程立即退出，profile 目录未被写入
+```
+
+`WorkBuddy.exe`（204MB 单文件）内同时含有 `user-data-dir`、`bad option`、`invalid option`、`electron` 等字符串——说明它是 **Electron 主二进制 + 自研启动壳的混合体**，启动壳在把参数交给 Electron 内核**之前**先做白名单校验，拒绝未知参数并退出。同样的 `CHROME_USER_DATA_DIR` 环境变量（Chromium 内核全局识别的官方等价机制）也无效。
+
+**结论**：静态内核探测（Electron + high）与"通道 B 适用"之间**存在第三类阻断**——厂商主动屏蔽参数传递。这类软件即使 Electron 特征全命中，实测也会秒退。进一步强化"通道 B 必须实测"的结论；同时表明：**探测层应新增一个轻量的"参数白名单探测"**——不启动程序，只对 exe 做字符串扫描（`bad option` / `invalid option` / `Usage:` 等启动壳特征），命中则把通道 B 置信度降级，避免误导性建议。
+
 ### 3.2 安装位置与访问权限探测
 
 **目的**：判断通道 A 是否可行（第二账户能否访问到 exe）。
@@ -219,6 +231,10 @@
 ```
 前置：向用户声明会短暂打开 1–2 个目标软件窗口，获得确认后执行。
 
+0. **启动壳预检**（实测前先做，可省一次无谓的窗口闪退）：对 exe 二进制做字符串扫描，
+   若命中 `bad option` / `invalid option` / `Usage:` 等启动壳特征 → 通道 B 大概率被厂商
+   屏蔽（WorkBuddy 反例即此类），可跳过启动实测直接回退通道 A，或如实告知"厂商屏蔽了
+   参数法"。该预检是启发式，不 100% 覆盖，实测失败仍需照常回退。
 1. 记录测试前目标进程的 PID 集合 P0
 2. 用 --<profile-flag> "<tempdir1>" 启动实例 #1
 3. 等待 T1（默认 8 秒），确认 #1 存活且 PID ∉ P0
@@ -227,6 +243,7 @@
 6. 判定：
      两个实例都存活        → 参数有效，置信度 high，通道 B 可用
      仅 #1 存活，#2 已退出  → 参数被忽略（很可能是 userData 硬编码），回退通道 A
+     启动壳拒绝参数（bad option） → 厂商屏蔽，回退通道 A，注明反例
      #1 也退出了           → 探测干扰了原实例，立即中止并如实报告
 7. 清理：关闭测试实例；临时 profile 目录默认保留（供用户查看），可配置为自动删除
 ```
@@ -320,6 +337,7 @@ pFile->Save(<桌面路径>.lnk, TRUE)
 | Electron 负载在版本子目录 | 只看同级目录会误判为原生 | 递归搜索 `versions\*` / `Application\*` |
 | `NtQueryObject` 查对象名阻塞 | 探测线程卡死，界面无响应 | 只查三种类型；放独立线程；超时放弃 |
 | 非提权读不到对象名 | 命名空间判定失败 | 降级为"实测反推"，不猜 |
+| 厂商启动壳拦截参数（WorkBuddy 反例） | `WorkBuddy.exe: bad option: ...`，进程秒退；`CHROME_USER_DATA_DIR` 环境变量同样无效 | 实测前做"参数白名单"字符串扫描预检，命中即回退通道 A |
 | `app.setPath('userData', 硬编码)` | 参数法看似支持，第二个实例实际秒退 | 通道 B 强制实测校验 |
 | 程序依赖相对路径 | 双开后共享同一份数据 | 启动时显式设置工作目录 |
 | `Global\` 命名空间的锁 | 通道 A 完全无效 | 探测阶段判红，如实告知 |
