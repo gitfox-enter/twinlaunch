@@ -38,6 +38,23 @@ Windows 的 `runas /savecred` 会把凭据交给**凭据管理器**保管。第�
 - 生成的图标目标是 `cmd /c runas ...`，右键菜单里的"以管理员身份运行"失效（`10` 是标准用户，用不上，正常）。
 - C 盘是配了重启还原的 VHD：万一配置被还原，重新执行 `MakeUser10Icon.cmd` 重建图标即可；`Reset-User10-Password.cmd` 可随时重置密码。
 
+## 第二账户的输入法（常见坑）
+
+**现象**：双开出的第二个窗口里切不出中文输入法（系统输入法 / 微信输入法都试过）。
+
+**根因**：输入法启用状态存在**每个用户自己的注册表 hive**（HKCU），而 `10` 的 profile 可能从未真正登录过（`C:\Users\10\NTUSER.DAT` 不存在，`ProfileList\SID` 的 `State=0`）。`runas` 不带 `/profile` 时用的是 DefaultUser 模板，配置全是默认值——所以**任何**以第二用户身份运行的双开方案都会遇到这个现象，不是本方案的 bug。
+
+**系统输入法（微软拼音）**：以 `10` 身份登录一次（或在登录界面切换一次），设置 → 时间和语言 → 语言 → 添加中文即可。
+
+**微信输入法（WeType）**：它走 TSF，机器级组件在 `C:\Program Files\Tencent\WeType\`（`wetype_tip.dll` 在 System32），但**每个用户要单独启用**，键在：
+```
+HKCU\Software\Microsoft\CTF\TIP\{86598FB9-66A2-463E-B9C2-AEB906D477AD}\LanguageProfile\0x00000804\{607FDF85-FCC8-4DBD-A365-41296F980C9C}
+  Enable = 1
+```
+**注意 WeType 复用了微软拼音的 TIP GUID `{86598FB9-...}`**，只是 LanguageProfile 子键是微信自己的 `{607FDF85-...}`——别被迷惑。
+
+**推荐做法**：先让 `10` 登录一次建好 profile，再运行 `Fix-User10-WeType.cmd`（以 `runas /savecred /profile /user:10` 自举，把 Enable 键写进 10 的 hive 并重启 WeType 进程）。
+
 ## 历史与血泪
 
 - 初版图标直接抄了原快捷方式的目标字符串，没展开环境变量 → `%USERPROFILE%\AppData\...` 被 `runas` 当成 `C:\Users\10\AppData\...`，文件不存在，窗口秒退。已修复（VBS 里 `ExpandEnvironmentStrings`）。
